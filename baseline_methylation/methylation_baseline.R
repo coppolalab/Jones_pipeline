@@ -1,39 +1,17 @@
 library(RnBeads)
-library(sva)
 library(biomaRt)
-library(Metrics)
-library(PMCMR)
-#String operations
-library(stringr)
+library(parallel)
 
-#Plotting
-library(ggplot2)
-library(extrafont)
 library(Cairo)
-library(heatmap.plus)
-library(gplots) #for heatmap.2
-library(RColorBrewer)
 library(UpSetR)
-
-#Reading and writing tables
-library(readr)
 library(openxlsx)
 
-#library(matrixStats)
 library(R.utils)
-
-#Data arrangement
-library(reshape2)
-library(dplyr)
-library(parallel)
-library(data.table)
-
-#Functional programming
-library(magrittr)
-library(purrr)
 library(tidyr)
 library(broom)
-library(WGCNA)
+library(magrittr)
+library(stringr)
+library(tidyverse)
 
 #THIS MUST BE FIXED IN PACKAGE
 rnb.execute.na.removal.fix <- function (rnb.set, threshold = rnb.getOption("filtering.missing.value.quantile")) {
@@ -483,10 +461,12 @@ SaveRDSgz(rnb.compare, "./save/rnb.compare.rda")
 promoters.compare <- meth(rnb.compare, type = "promoters")
 rownames(promoters.compare) <- rownames(annotation(rnb.compare, type = "promoters"))
 promoters.compare.combat <- ComBat(dat = promoters.compare, batch = pheno(rnb.compare)$Batch, mod = compare.design)
+SaveRDSgz(promoters.compare.combat, "./save/promoters.compare.combat.rda")
 
 genes.compare <- meth(rnb.compare, type = "genes")
 rownames(genes.compare) <- rownames(annotation(rnb.compare, type = "genes"))
 genes.compare.combat <- ComBat(dat = genes.compare, batch = pheno(rnb.compare)$Batch, mod = compare.design)
+SaveRDSgz(genes.compare.combat, "./save/genes.compare.combat.rda")
 
 promoters.compare.rmcov <- removeBatchEffect(promoters.compare.combat, covariates = compare.design[,4:ncol(compare.design)], design = compare.design[,1:3])
 genes.compare.rmcov <- removeBatchEffect(genes.compare.combat, covariates = compare.design[,4:ncol(compare.design)], design = compare.design[,1:3])
@@ -917,30 +897,62 @@ clock.transcripts <- getNearestTranscript(hm450[clock.annotation$CpGmarker]) #ge
 clock.transcripts$Illumina.ID <- rownames(clock.transcripts) #Add Illumina ID column
 write.xlsx(clock.transcripts, "clock.transcripts.xlsx") #Save to .xlsx
 
-gata4.meth <- promoters.compare["ENSG00000136574",]
-gata4.df <- data.frame(Tissue = pheno(rnb.compare)$Tissue, Cell.Type = pheno(rnb.compare)$Cell.Type, Methylation = gata4.meth) 
-gata4.df$Combined <- str_c(gata4.df$Tissue, gata4.df$Cell.Type, sep = " ") %>% factor(levels = c("duodenum mucosa", "duodenum crypts", "colon mucosa", "colon crypts"))
+MethylationPlot <- function(ensembl.id, symbol, pheno.data) {
+    gene.meth <- promoters.compare[ensembl.id,]
+    gene.df <- tibble(Tissue = pheno.data$Tissue, Cell.Type = pheno.data$Cell.Type, Methylation = gene.meth) 
+    gene.df$Combined <- str_c(gene.df$Tissue, gene.df$Cell.Type, sep = " ") %>% factor(levels = c("duodenum mucosa", "duodenum crypts", "colon mucosa", "colon crypts"))
 
-p <- ggplot(gata4.df, aes(x = Combined, y = Methylation, color = Combined)) + geom_boxplot() + geom_jitter() + theme_bw()
-p <- p + theme(legend.position = "none") + theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.title.x = element_blank())
+    p <- ggplot(gene.df, aes(x = Combined, y = Methylation, color = Combined)) + geom_boxplot() + geom_jitter() + theme_bw()
+    p <- p + theme(legend.position = "none") + theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.title.x = element_blank())
+    p <- p + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.title.x = element_blank()) 
+    p <- p + theme(plot.background = element_blank(), panel.border = element_rect(size = 1, color = "black"))
+    p <- p + theme(plot.title = element_text(hjust = 0.5)) 
+    CairoPDF(str_c(symbol, "_methylation"), height = 4, width = 4, bg = "transparent")
+    print(p)
+    dev.off()
+}
+
+pheno.compare <- pheno(rnb.compare)
+pheno.compare$Age.cont <- str_split_fixed(pheno.compare$Chronological.Age, "-", 2) %>% apply(2, as.integer) %>% apply(1, mean)
+pheno.compare$Combined <- str_c(pheno.compare$Tissue, pheno.compare$Cell.Type, sep = " ")
+SaveRDSgz(pheno.compare, "./save/pheno.compare.rda")
+
+MethylationPlot("ENSG00000122043", "GATA4", pheno.compare)
+MethylationPlot("ENSG00000130700", "GATA5", pheno.compare)
+MethylationPlot("ENSG00000169876", "MUC17", pheno.compare)
+MethylationPlot("ENSG00000169372", "CRADD", pheno.compare)
+MethylationPlot("ENSG00000188373", "C10orf99", pheno.compare)
+MethylationPlot("ENSG00000120068", "HOXB8", pheno.compare)
+MethylationPlot("ENSG00000100097", "LGALS1", pheno.compare)
+
+candidate.ids <- c("ENSG00000122043", "ENSG00000130700", "ENSG00000169876", "ENSG00000169372", "ENSG00000188373", "ENSG00000120068", "ENSG00000100097")
+symbol.ids <- c("GATA4", "GATA5", "MUC17", "CRADD", "C10orf99", "HOXB8", "LGALS1")
+
+promoters.bicor <- bicor(t(promoters.compare), pheno.compare$Age.cont) %>% 
+    signif(3) %>%
+    as_tibble %>% 
+    set_colnames("Correlation") %>%
+    mutate(Ensembl.ID = rownames(promoters.compare)) %>% 
+    left_join(promoters.bm.table) %>%
+    select(Ensembl.ID, Symbol, Correlation)
+promoters.bicor$P.Value <- corPvalueStudent(promoters.bicor$Correlation, nSamples = nrow(promoters.compare)) %>% p.adjust("fdr") %>% signif(3)
+write.xlsx(promoters.bicor, "promoters.age.cor.xlsx")
+
+promoters.candidates <- promoters.compare[candidate.ids,] %>% 
+    t %>% 
+    as_tibble %>%
+    set_colnames(symbol.ids) %>%
+    mutate(Age = pheno.compare$Age.cont) %>%
+    mutate(Cell.Type = pheno.compare$Combined) %>%
+    gather(Gene, Methylation, -Age, -Cell.Type)
+
+p <- ggplot(promoters.candidates, aes(x = Age, y = Methylation, color = Cell.Type)) + stat_smooth(color = "blue", method = "lm") + geom_point() + theme_bw() 
+p <- p + theme(legend.background = element_blank()) + xlab("Age")
 p <- p + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.title.x = element_blank()) 
 p <- p + theme(plot.background = element_blank(), panel.border = element_rect(size = 1, color = "black"))
-p <- p + theme(plot.title = element_text(hjust = 0.5)) + ylim(0,1)
-CairoPDF("GATA4_methylation", height = 4, width = 4, bg = "transparent")
+p <- p + theme(plot.title = element_text(hjust = 0.5), axis.title.y = element_blank())
+p <- p + facet_wrap(~ Gene, ncol = 4, scales = "free")
+CairoPDF("age_plot", height = 7, width = 16, bg = "transparent")
 print(p)
 dev.off()
-
-gata5.meth <- promoters.compare["ENSG00000130700",]
-gata5.df <- data.frame(Tissue = pheno(rnb.compare)$Tissue, Cell.Type = pheno(rnb.compare)$Cell.Type, Methylation = gata5.meth) 
-gata5.df$Combined <- str_c(gata5.df$Tissue, gata5.df$Cell.Type, sep = " ") %>% factor(levels = c("duodenum mucosa", "duodenum crypts", "colon mucosa", "colon crypts"))
-
-p <- ggplot(gata5.df, aes(x = Combined, y = Methylation, color = Combined)) + geom_boxplot() + geom_jitter() + theme_bw()
-p <- p + theme(legend.position = "none") + theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.title.x = element_blank())
-p <- p + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.title.x = element_blank()) 
-p <- p + theme(plot.background = element_blank(), panel.border = element_rect(size = 1, color = "black"))
-p <- p + theme(plot.title = element_text(hjust = 0.5)) + ylim(0,1)
-CairoPDF("GATA5_methylation", height = 4, width = 4, bg = "transparent")
-print(p)
-dev.off()
-
 

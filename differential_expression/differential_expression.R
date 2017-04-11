@@ -6,34 +6,18 @@ library(limma)
 library(annotate)
 library(biomaRt)
 library(siggenes)
-library(sva)
-library(broom)
-library(WGCNA)
-library(tools)
 library(BayesFactor)
 
-#String operations
-library(stringr)
-
-#Reading and writing tables
-library(readr)
-library(openxlsx)
-
-#Plotting
-library(ggplot2)
 library(Cairo)
-library(heatmap.plus)
-library(gplots) #for heatmap.2
-library(RColorBrewer)
+library(openxlsx)
+library(WGCNA)
 
-#Data arrangement
-library(dplyr)
-library(tidyr)
-
-#Functional programming
+library(tools)
+library(broom)
 library(magrittr)
-library(purrr)
 library(rlist)
+library(stringr)
+library(tidyverse)
 
 #Boxplot function
 BoxPlot <- function(filename, lumi.object, colorscheme, maintext, ylabtext) {
@@ -162,7 +146,7 @@ BayesPlot <- function(siggene, filename, threshold, log.column = "logFC", xlabel
     dev.off()
 }
 
-GeneBoxplot <- function(lumi.object, gene.symbol) {
+GeneBoxplot <- function(lumi.object, gene.symbol, show.label = FALSE) {
     gene.expr <- as.vector(exprs(lumi.object[gene.symbol,]))
     gene.df <- data.frame(Combined = lumi.object$Combined, Expression = gene.expr)
     gene.df$Combined %<>% factor(levels = c("duodenum_crypts", "colon_crypts"))
@@ -171,6 +155,9 @@ GeneBoxplot <- function(lumi.object, gene.symbol) {
     p <- p + theme(legend.position = "none", panel.grid.major = element_blank(), panel.grid.minor = element_blank())
     p <- p +  theme(plot.background = element_blank(), panel.border = element_rect(color = "black", size = 1))
     p <- p + theme(axis.title.x = element_blank(), axis.ticks.x = element_blank())
+    if (show.label == TRUE) {
+        p <- p + theme(plot.title = element_text(hjust = 0.5)) + ggtitle(gene.symbol)
+    }
     CairoPDF(str_c(gene.symbol, ".pdf"), width = 4, height = 3, bg = "transparent")
     print(p)
     dev.off()
@@ -375,7 +362,7 @@ kegg.final <- slice(kegg.filter, c(4))
 enrichr.final <- rbind(gobiol.final, gomole.final, kegg.final, reactome.final)
 EnrichrPlot(enrichr.final, filter.df, "enrichr")
 
-top5.symbol <- arrange(toptable.annot, adj.P.Val)$Symbol[1:5]
+top5.symbol <- arrange(toptable.annot, adj.P.Val)$Symbol[1:10]
 top5.expr <- t(exprs(lumi.collapse)[top5.symbol,])
 colnames(top5.expr) <- top5.symbol
 top5.df <- data.frame(Combined = as.character(lumi.collapse$Combined), top5.expr) %>% gather(Gene, Expression, -Combined)
@@ -387,13 +374,21 @@ p <- p + facet_wrap(~ Gene, ncol = 5, scales = "free") + theme(legend.position =
 p <- p + theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.title.x = element_blank())
 p <- p + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.title.x = element_blank()) 
 p <- p + theme(plot.background = element_blank(), panel.border = element_rect(size = 1, color = "black"))
-p <- p + theme(plot.title = element_text(hjust = 0.5))
-CairoPDF("top5", height = 4, width = 16, bg = "transparent")
+p <- p + theme(plot.title = element_text(hjust = 0.5), axis.title.y = element_blank())
+CairoPDF("top5", height = 8, width = 16, bg = "transparent")
 print(p)
 dev.off()
 
 GeneBoxplot(lumi.collapse, "GATA4")
 GeneBoxplot(lumi.collapse, "GATA5")
+GeneBoxplot(lumi.collapse, "MUC17")
+GeneBoxplot(lumi.collapse, "CRADD")
+GeneBoxplot(lumi.collapse, "C10orf99")
+GeneBoxplot(lumi.collapse, "HOXB8")
+GeneBoxplot(lumi.collapse, "LGALS1")
+GeneBoxplot(lumi.collapse, "ALPI", TRUE)
+GeneBoxplot(lumi.collapse, "FABP2", TRUE)
+GeneBoxplot(lumi.collapse, "SLC5A1", TRUE)
 
 de.sig.up <- filter(toptable.annot, adj.P.Val < 0.01 & logFC > 0) %>% select(Symbol, logFC, P.Value, adj.P.Val)
 colnames(de.sig.up)[-1] %<>% str_c(".expr")
@@ -411,3 +406,30 @@ write.xlsx(down.inner.join, "down.inner.join.xlsx")
 
 clock.transcripts <- read.xlsx("../baseline_methylation/clock.transcripts.xlsx")
 
+genes.bicor <- bicor(t(exprs(lumi.collapse)), lumi.collapse$Age) %>% 
+    signif(3) %>%
+    as_tibble %>% 
+    set_colnames("Correlation") %>%
+    mutate(Symbol = rownames(lumi.collapse)) 
+genes.bicor$P.Value <- corPvalueStudent(genes.bicor$Correlation, nSamples = nrow(lumi.collapse)) %>% p.adjust("fdr") %>% signif(3)
+genes.bicor %<>% select(Symbol, Correlation, P.Value) %>% arrange(P.Value)
+write.xlsx(genes.bicor, "genes.age.cor.xlsx")
+
+candidate.list <- c("GATA4","GATA5","MUC17","CRADD","C10orf99","HOXB8","LGALS1")
+
+genes.candidates <- exprs(lumi.collapse[candidate.list,]) %>% 
+    t %>% 
+    as_tibble %>%
+    mutate(Age = lumi.collapse$Age) %>%
+    mutate(Cell.Type = lumi.collapse$Combined) %>%
+    gather(Gene, Expression, -Age, -Cell.Type)
+
+p <- ggplot(genes.candidates, aes(x = Age, y = Expression, color = Cell.Type)) + stat_smooth(color = "blue", method = "lm") + geom_point() + theme_bw() 
+p <- p + theme(legend.background = element_blank()) + xlab("Age")
+p <- p + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.title.x = element_blank()) 
+p <- p + theme(plot.background = element_blank(), panel.border = element_rect(size = 1, color = "black"))
+p <- p + theme(plot.title = element_text(hjust = 0.5), axis.title.y = element_blank())
+p <- p + facet_wrap(~ Gene, ncol = 4, scales = "free")
+CairoPDF("age_plot", height = 7, width = 16, bg = "transparent")
+print(p)
+dev.off()

@@ -1,80 +1,22 @@
-#For WGCNA
 library(WGCNA)
 library(flashClust)
 enableWGCNAThreads()
 library(biomaRt)
-
-#For baseline processing
-library(limma)
-library(sva)
-library(R.utils)
 library(Biobase)
 
-#Functional programming
-library(magrittr)
-library(purrr)
-library(functional)
-
-#Data arrangement
-library(dplyr)
-library(tidyr)
-library(broom)
 library(PMCMR)
 library(BayesFactor)
 
-#String operations
-library(stringr)
-
-#Plotting
-library(ggplot2)
-library(extrafont)
 library(Cairo)
 library(igraph)
-
-#Reading and writing tables
-library(readr)
 library(openxlsx)
-library(parallel)
+
+library(stringr)
+library(magrittr)
+library(broom)
+library(tidyverse)
 
 source("../../FRDA project/common_functions.R")
-
-PCAPlot <- function(filename, dataset, facet.bool, size.height, size.width) {
-    colnames(dataset)[2] <- "Module"
-    dataset$Module %<>% str_replace("ME", "") 
-    p <- ggplot(dataset, aes(x = as.numeric(x), y = value, fill = Module, color = Module)) + geom_point()
-    p <- p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
-    p <- p + theme(axis.ticks.x = element_blank()) + ylab("First Principal Component")
-    p <- p + theme(axis.title.x = element_blank()) + scale_x_continuous(as.numeric(unique(dataset$x)))
-    p <- p + scale_color_manual(values = sort(unique(dataset$Module)))
-    if (facet.bool == TRUE)
-    {
-        p <- p + facet_wrap(~ Module)
-        p <- p + theme(legend.position = "none")
-    } 
-    CairoPDF(filename, height = size.height, width = size.width)
-    print(p)
-    dev.off()
-}
-
-Heatmap <- function(dataset, ME.genes) {
-    color <- as.character(unique(dataset$module.colors))
-    dataset %<>% select(-module.colors) %>% scale
-    max.dataset <- max(abs(dataset))
-    print(dim(dataset))
-    CairoPDF(paste("./modules/", color, sep = ""), width = 21, height = 12)
-    par(mar = c(3.5,3,2,3))
-    par(oma = c(4,0,2,0))
-    plotMat(dataset, zlim = c(-max.dataset, max.dataset), main = paste(color, " (", nrow(dataset), ")", sep = ""))
-
-    ME.genes.plot <- select(ME.genes, Sample.ID, matches(color))
-    p <- ggplot(ME.genes.plot, aes_string(x = "Sample.ID", y = color))
-    p <- p + geom_bar(stat = "identity") + xlab("Eigengene Expression")#+ ylim(c(-6, 16)) 
-    p <- p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
-    p <- p + theme(axis.text.x = element_text(angle = 90, size = 2))  
-    p <- p + theme(axis.title.x = element_blank(), axis.ticks.x = element_blank())
-    print(p)
-    dev.off()
-}
 
 EnrichrSubmit <- function(index, full.df, enrichr.terms, use.weights = FALSE) {
     dataset <- filter(full.df, Module == index)
@@ -123,37 +65,16 @@ Workbook <- function(dataset, filename) {
     saveWorkbook(wb, filename, overwrite = TRUE) 
 }
 
-EigengeneModel <- function(ME.vector, trait.vector, contrasts.vector) {
-    trait.df <- data.frame(Trait = trait.vector, ME = ME.vector)
-    trait.contrasts <- posthoc.kruskal.dunn.test(ME ~ Trait, trait.df, p.adjust.method = "none") 
-    trait.contrasts
-
-    trait.pvals <- trait.contrasts$p.value
-    pval.ccdc <- trait.pvals["colon.crypts","duodenum.crypts"]
-    pval.cmdm <- trait.pvals["colon.mucosa","duodenum.mucosa"]
-    pval.dcdm <- trait.pvals["duodenum.crypts","duodenum.mucosa"]
-    pval.cccm <- trait.pvals["colon.crypts","colon.mucosa"]
-    pvals.subset <- p.adjust(c(pval.ccdc, pval.cmdm, pval.dcdm, pval.cccm), method = "fdr")
-
-    trait.medians <- group_by(trait.df, Trait) %>% summarise(median(ME)) %>% data.frame
-    colnames(trait.medians)[2] <- "Median"
-    rownames(trait.medians) <- trait.medians$Trait
-    pval.ccdc <- trait.medians["duodenum.crypts","Median"] - trait.medians["colon.crypts","Median"] 
-    pval.cmdm <- trait.medians["duodenum.mucosa","Median"] - trait.medians["colon.mucosa","Median"] 
-    pval.dcdm <- trait.medians["duodenum.mucosa","Median"] - trait.medians["duodenum.crypts","Median"] 
-    pval.cccm <- trait.medians["colon.mucosa","Median"] - trait.medians["colon.crypts","Median"] 
-
-    diffs.subset <- c(pval.ccdc, pval.cmdm, pval.dcdm, pval.cccm)
-    anova.return <- data.frame(Diff = diffs.subset, P.value = pvals.subset)
-    rownames(anova.return) <- contrasts.vector
-
-    return(anova.return)
-}
-
 EigengeneANOVA <- function(ME.vector, trait.vector) {
     trait.df <- data.frame(Trait = trait.vector, ME = ME.vector)
     trait.anova <- kruskal.test(ME ~ Trait, trait.df) %>% tidy
     return(trait.anova$p.value)
+}
+
+EigengeneBayes <- function(ME.vector, trait.vector) {
+    trait.df <- data.frame(Trait = trait.vector, ME = ME.vector)
+    trait.anova <- anovaBF(ME ~ Trait, data = trait.df) #%>% anova %>% tidy
+    trait.anova
 }
 
 PlotHubGenes <- function(module.color, module.table, adjacency.mat) {
@@ -169,7 +90,7 @@ PlotHubGenes <- function(module.color, module.table, adjacency.mat) {
     dev.off()
 }
 
-FilterEnrichr <- function(enrichr.df, size = 100) {
+FilterEnrichr <- function(enrichr.df, size = 200) {
     enrichr.df$Num.Genes <- map(enrichr.df$Genes, str_split, ",") %>% map(extract2, 1) %>% map_int(length)
     enrichr.filter <- filter(enrichr.df, Num.Genes > 4) %>% filter(P.value < 0.05)
     if (nrow(enrichr.df) > size) {
@@ -178,14 +99,54 @@ FilterEnrichr <- function(enrichr.df, size = 100) {
     enrichr.filter
 }
 
-genes.rmcov <- ReadRDSgz("../differential_expression/save/rmcov.lumi.rda")
+EnrichrPlot <- function(enrichr.df, filename, plot.title, plot.height = 5, plot.width = 8) {
+    enrichr.df$Gene.Count <- map(enrichr.df$Genes, str_split, ",") %>% map(unlist) %>% map_int(length)
+    enrichr.df$Adj.P.value <- p.adjust(enrichr.df$P.value, method = "fdr")
+    enrichr.df$Log.P.value <- -log10(enrichr.df$Adj.P.value)
+    enrichr.df$Term %<>% str_replace_all("\\ \\(.*$", "") %>% str_replace_all("\\_Homo.*$", "")  #Remove any thing after the left parenthesis and convert to all lower case
+    enrichr.df$Format.Name <- str_c(enrichr.df$Database, ": ", enrichr.df$Term, " (", enrichr.df$Gene.Count, ")")
+    enrichr.df %<>% arrange(Log.P.value)
+    enrichr.df$Format.Name %<>% factor(levels = enrichr.df$Format.Name)
+
+    p <- ggplot(enrichr.df, aes(Format.Name, Log.P.value)) + geom_bar(fill = "blue", stat = "identity", size = 1) 
+    p <- p + coord_flip() + theme_bw() + theme(axis.title.y = element_blank(), axis.ticks.y = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) 
+    p <- p + theme(plot.background = element_blank(), legend.background = element_blank(), axis.text.y = element_text(size = 12), panel.border = element_blank())
+    p <- p + theme(panel.background = element_blank(), axis.line.x = element_line()) + geom_hline(color = "red", yintercept = -log10(0.05))
+    p <- p + ylab(expression(paste(Log[10], ' P-Value')))
+    CairoPDF(filename, height = plot.height, width = plot.width, bg = "transparent")
+    print(p)
+    dev.off()
+}
+
+Top5Plot <- function(rank.column, module.object, expr.object, pheno.object, pheno.col, maintitle, filename) {
+    col.name <- str_c("desc(", rank.column, ")")
+
+    top5.symbol <- arrange_(module.object, col.name)$Symbol[1:5]
+    top5.expr <- t(exprs(expr.object[top5.symbol,]))
+    colnames(top5.expr) <- top5.symbol
+    top5.df <- data.frame(Sample = pheno.object[[pheno.col]], top5.expr) %>% gather(Gene, Expression, -Sample)
+
+    top5.df$Gene %<>% factor(levels = make.names(top5.symbol))
+
+    p <- ggplot(top5.df, aes(x = Sample, y = Expression, color = Sample)) + geom_boxplot() + geom_jitter() + theme_bw()
+    p <- p + facet_wrap(~ Gene, ncol = 5, scales = "free") + theme(legend.position = "none")
+    p <- p + theme(axis.title.x = element_blank())
+    p <- p + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.title.x = element_blank()) 
+    p <- p + theme(plot.background = element_blank(), panel.border = element_rect(size = 1, color = "black"))
+    p <- p + theme(plot.title = element_text(hjust = 0.5), axis.title.y = element_blank())
+    p <- p + ggtitle(maintitle)
+    CairoPDF(filename, height = 3.5, width = 16, bg = "transparent")
+    print(p)
+    dev.off()
+}
+
+source("../../code/common_functions.R")
+genes.collapse <- ReadRDSgz("../differential_expression/save/lumi.collapse.rda")
 
 #Calculate scale free topology measures for different values of power adjacency function
 powers <- c(c(1:10), seq(from = 12, to = 39, by = 2))
 
-sft <- pickSoftThreshold(t(exprs(genes.rmcov)), powerVector = powers, verbose = 5, networkType = "signed")
-sft.bicor <- pickSoftThreshold(t(exprs(genes.rmcov)), powerVector = powers, verbose = 5, corFnc = bicor, corOptions = list(maxPOutliers = 0.05), networkType = "signed")
-sft.spearman <- pickSoftThreshold(t(exprs(genes.rmcov)), powerVector = powers, verbose = 5, corFnc = cor, corOptions = list(method = "spearman"), networkType = "signed")
+sft.bicor <- pickSoftThreshold(t(exprs(genes.collapse)), powerVector = powers, verbose = 5, corFnc = bicor, corOptions = list(maxPOutliers = 0.05), networkType = "signed")
 sft.df <- sft.bicor$fitIndices
 SaveRDSgz(sft.bicor, file = "./save/sft.bicor.rda")
 
@@ -206,9 +167,10 @@ CairoPDF(file = "./meanconnectivity", width = 6, height = 6)
 print(p)
 dev.off()
 
-softPower <- 9
-adjacency.expr <- adjacency(t(exprs(genes.rmcov)), power = softPower, type = "signed", corFnc = "bicor", corOptions = "maxPOutliers = 0.05")
+softPower <- 8
+adjacency.expr <- adjacency(t(exprs(genes.collapse)), power = softPower, type = "signed", corFnc = "bicor", corOptions = "maxPOutliers = 0.05")
 #SaveRDSgz(adjacency.expr, file = "./save/adjacency.rda")
+gc()
 
 TOM <- TOMsimilarity(adjacency.expr, verbose = 5)
 dissimilarity.TOM <- 1 - TOM
@@ -236,7 +198,7 @@ plotDendroAndColors(geneTree, dynamic.colors, "", dendroLabels = FALSE, hang = 0
 dev.off()
 
 #Calculate module eigengenes
-ME.list <- moduleEigengenes(t(exprs(genes.rmcov)), colors = dynamic.colors, softPower = softPower, nPC = 1)
+ME.list <- moduleEigengenes(t(exprs(genes.collapse)), colors = dynamic.colors, softPower = softPower, nPC = 1)
 ME.genes <- ME.list$eigengenes
 MEDiss <- 1 - bicor(ME.genes, maxPOutliers = 0.05)
 METree <- flashClust(as.dist(MEDiss), method = "average")
@@ -248,7 +210,7 @@ dev.off()
 
 #Check if any modules are too similar and merge them.  Possibly not working.
 ME.dissimilarity.threshold <- 0.2
-merge.all <- mergeCloseModules(t(exprs(genes.rmcov)), dynamic.colors, cutHeight = ME.dissimilarity.threshold, corFnc = bicor, corOptions = list(maxPOutliers = 0.05), verbose = 3) 
+merge.all <- mergeCloseModules(t(exprs(genes.collapse)), dynamic.colors, cutHeight = ME.dissimilarity.threshold, corFnc = bicor, corOptions = list(maxPOutliers = 0.05), verbose = 3) 
 merged.colors <- merge.all$colors
 merged.genes <- merge.all$newMEs
 
@@ -269,42 +231,18 @@ CairoPDF("eigengenes", height = 6, width = 8, bg = "transparent")
 plotEigengeneNetworks(ME.genes, "", marDendro = c(0,4,1,2), marHeatmap = c(3,5,1,2), plotPreservation = "standard")
 dev.off()
 
-EigengeneBayes <- function(ME.vector, trait.vector) {
-    trait.df <- data.frame(Trait = trait.vector, ME = ME.vector)
-    trait.anova <- anovaBF(ME ~ Trait, data = trait.df) #%>% anova %>% tidy
-    trait.anova
-}
-
 pheno.import <- ReadRDSgz("../differential_expression/save/rmcov.pheno.rda")
-pheno.import$Combined %<>% factor %>% droplevels
+pheno.import$Combined %<>% factor(levels = c("duodenum_crypts", "colon_crypts")) %>% droplevels
 anova.status <- map_dbl(ME.genes, EigengeneANOVA, pheno.import$Combined) %>% p.adjust("fdr") %>% signif(3)
 bayes.status <- map(ME.genes, EigengeneBayes, pheno.import$Combined) 
 bf.status <- map(bayes.status, extractBF) %>% map_dbl(extract2, "bf")
 posterior.status <- map(bayes.status, posterior, iterations = 100000) 
-contrasts.vector <- c("duodenum_crypts_vs._colon_crypts")
+
+cor.age <- bicor(ME.genes, pheno.import$Age) %>% as.vector
+cor.age.pval <- corPvalueStudent(cor.age, nrow(pheno.import)) %>% p.adjust("fdr")
+cor.df <- tibble(Module = colnames(ME.genes), Correlation = cor.age, P.Value = cor.age.pval)
 
 color.values <- unique(module.colors)
-cor.status <- map(ME.genes, EigengeneModel, pheno.import$Combined, contrasts.vector)
-
-status.diff <- map(cor.status, select, Diff) %>% map(t) %>% reduce(rbind) %>% data.frame
-rownames(status.diff) <- names(cor.status)
-
-status.pval <- map(cor.status, select, P.value) %>% map(t) %>% reduce(rbind) %>% data.frame
-rownames(status.pval) <- names(cor.status)
-
-pval.adjust <- map(status.pval, p.adjust, method = "fdr", n = length(color.values)) %>% reduce(cbind) %>% data.frame
-rownames(pval.adjust) <- rownames(status.pval)
-colnames(pval.adjust) <- paste(colnames(status.pval), ".pval")
-
-text.matrix.traits <- paste(signif(as.matrix(status.diff), 2), '\n(', signif(as.matrix(pval.adjust), 1), ')', sep = '')
-dim(text.matrix.traits) = dim(status.diff)
-
-heatmap.range <- c(min(as.matrix(status.diff)) * 1.1, max(as.matrix(status.diff)) * 1.1)
-width.dynamic <- 3 + (1 * ncol(text.matrix.traits))
-CairoPDF("module-trait relationships", width = width.dynamic, height = 10, bg = "transparent")
-par(mar = c(14, 9, 3, 3))
-labeledHeatmap(Matrix = as.matrix(status.diff), xLabels = colnames(status.diff), yLabels = colnames(ME.genes), ySymbols = colnames(ME.genes), yColorLabels = TRUE, colors = greenWhiteRed(50), textMatrix = text.matrix.traits, setStdMargins = F, zlim = c(-1,1), main = "")
-dev.off()
 
 all.degrees <- intramodularConnectivity(adjacency.expr, module.colors)
 gene.info <- data.frame(Symbol = rownames(all.degrees), Module = module.colors, all.degrees)
@@ -314,13 +252,13 @@ gene.info[,3:ncol(gene.info)] <- signif(gene.info[,3:ncol(gene.info)], 3)
 #Annotate gene table
 ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
 
-genes.bm.table <- getBM(attributes = c('hgnc_symbol', 'description'), filters = 'hgnc_symbol', values = featureNames(genes.rmcov), mart = ensembl)
+genes.bm.table <- getBM(attributes = c('hgnc_symbol', 'description'), filters = 'hgnc_symbol', values = featureNames(genes.collapse), mart = ensembl)
 genes.bm.table$description %<>% str_replace_all(" \\[.*\\]$", "")
 colnames(genes.bm.table) <- c("Symbol", "Description")
 
 gene.info.annot <- left_join(gene.info, genes.bm.table) 
-gene.module.membership <- data.frame(bicor(t(exprs(genes.rmcov)), ME.genes, maxPOutliers = 0.05)) %>% signif(3)
-module.membership.pvalue <- data.frame(corPvalueStudent(as.matrix(gene.module.membership), nrow(t(exprs(genes.rmcov))))) %>% signif(3)
+gene.module.membership <- data.frame(bicor(t(exprs(genes.collapse)), ME.genes, maxPOutliers = 0.05)) %>% signif(3)
+module.membership.pvalue <- data.frame(corPvalueStudent(as.matrix(gene.module.membership), nrow(t(exprs(genes.collapse))))) %>% signif(3)
 colnames(gene.module.membership) <- str_replace(names(ME.genes),"ME", "MM.")
 colnames(module.membership.pvalue) <- str_replace(names(ME.genes),"ME", "MM.pvalue.")
 gene.module.membership$Symbol <- rownames(gene.module.membership)
@@ -342,149 +280,178 @@ p <- ggplot(ME.genes.plot, aes(x = Combined, y = Eigengene, color = Combined)) +
 p <- p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), plot.background = element_blank())
 p <- p + theme(legend.position = "none", axis.title.x = element_blank(), axis.title.y = element_blank())
 p <- p + scale_fill_manual(values = sort(unique(ME.genes.plot$Module.Color)))
-p <- p + theme(panel.border = element_rect(size = 1, color = "black"), axis.text.x = element_text(angle = 45, hjust = 1))
-p <- p + facet_wrap(~ Module.Color, ncol = 5, scales = "free")
-CairoPDF("eigengene_plots", height = 8, width = 16, bg = "transparent")
+p <- p + theme(panel.border = element_rect(size = 1, color = "black"))
+p <- p + facet_wrap(~ Module.Color, ncol = 4, scales = "free")
+CairoPDF("eigengene_plots", height = 10, width = 16, bg = "transparent")
 print(p)
 dev.off()
 
-#Other plots
-all.smooth <- apply(ME.genes, 2, smooth.spline, spar = 0.4) %>% llply(`[`, "y")
-smooth.df <- data.frame(all.smooth)
-colnames(smooth.df) <- names(all.smooth)
-smooth.df$x <- as.factor(1:nrow(smooth.df))
-smooth.plot <- melt(smooth.df, id.vars = "x")
+ME.genes.age <- mutate(ME.genes, Age = pheno.import$Age, Combined = pheno.import$Combined) %>%
+    gather(Module.Color, Eigengene, -Age, -Combined) 
+ME.genes.age$Module.Color %<>% str_replace("ME", "")
+ME.genes.age$Combined %<>% str_replace("\\_", " ") %>% factor(levels = c("duodenum mucosa", "duodenum crypts", "colon mucosa", "colon crypts"))
 
-PCAPlot("all_principal_components", smooth.plot, FALSE, 10, 15)
-PCAPlot("facet_principal_components", smooth.plot, TRUE, 13, 25)
+p <- ggplot(ME.genes.age, aes(x = Age, y = Eigengene, color = Combined)) + stat_smooth(color = "blue", method = "lm") + geom_point()
+p <- p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), plot.background = element_blank())
+p <- p + theme(legend.background = element_blank(), axis.title.x = element_blank(), axis.title.y = element_blank())
+p <- p + scale_fill_manual(values = sort(unique(ME.genes.plot$Module.Color)))
+p <- p + theme(panel.border = element_rect(size = 1, color = "black"))
+p <- p + facet_wrap(~ Module.Color, ncol = 4, scales = "free")
+CairoPDF("eigengene_age", height = 10.5, width = 17, bg = "transparent")
+print(p)
+dev.off()
 
-sample.ids <- factor(rownames(expr.collapse), levels = rownames(expr.collapse))
-colnames(ME.genes) %<>% str_replace("ME", "")
-ME.genes.plot <- mutate(data.frame(ME.genes), Sample.ID = sample.ids)
-expr.data.plot <- data.frame(t(expr.collapse), module.colors)
-split(expr.data.plot, expr.data.plot$module.colors) %>% map(Heatmap, ME.genes.plot)
+modules.filter <- filter(final.genetable, nchar(Symbol) > 0) %>% as_tibble
+top.table <- read.xlsx("../differential_expression/toptable_annotated.xlsx") 
+top.filter <- as_tibble(top.table) %>% 
+    select(Symbol, logFC, adj.P.Val) %>%
+    filter(adj.P.Val < 0.05)
+top.up <- filter(top.filter, logFC > 0)
+top.down <- filter(top.filter, logFC < 0)
 
-PlotHubGenes("blue", final.genetable, adjacency.expr)
-PlotHubGenes("brown", final.genetable, adjacency.expr)
-PlotHubGenes("turquoise", final.genetable, adjacency.expr)
+blue.up <- filter(modules.filter, Module == "blue") %>% inner_join(top.up)
+brown.up <- filter(modules.filter, Module == "brown") %>% inner_join(top.up)
+turquoise.down <- filter(modules.filter, Module == "turquoise") %>% inner_join(top.down)
 
-EnrichrPlot <- function(enrichr.df, filename, plot.title, plot.height = 5, plot.width = 8) {
-    enrichr.df$Gene.Count <- map(enrichr.df$Genes, str_split, ",") %>% map(unlist) %>% map_int(length)
-    enrichr.df$Adj.P.value <- p.adjust(enrichr.df$P.value, method = "fdr")
-    enrichr.df$Log.P.value <- -log10(enrichr.df$Adj.P.value)
-    enrichr.df$Term %<>% str_replace_all("\\ \\(.*$", "") %>% str_replace_all("\\_Homo.*$", "")  #Remove any thing after the left parenthesis and convert to all lower case
-    enrichr.df$Format.Name <- str_c(enrichr.df$Database, ": ", enrichr.df$Term, " (", enrichr.df$Gene.Count, ")")
-    enrichr.df %<>% arrange(Log.P.value)
-    enrichr.df$Format.Name %<>% factor(levels = enrichr.df$Format.Name)
+contrasts.levels <- c("duodenum_crypts", "colon_crypts")
+Top5Plot("kscaled", blue.up, genes.collapse, pheno.import, "Combined", "Hub Genes", "top5.blue.up")
+Top5Plot("kscaled", brown.up, genes.collapse, pheno.import, "Combined", "Hub Genes", "top5.brown.up")
+Top5Plot("kscaled", turquoise.down, genes.collapse, pheno.import, "Combined", "Hub Genes", "top5.turquoise.down")
 
-    p <- ggplot(enrichr.df, aes(Format.Name, Log.P.value)) + geom_bar(fill = "blue", stat = "identity", size = 1) 
-    p <- p + coord_flip() + theme_bw() + theme(axis.title.y = element_blank(), axis.ticks.y = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) 
-    p <- p + theme(plot.background = element_blank(), legend.background = element_blank(), axis.text.y = element_text(size = 12), panel.border = element_blank())
-    p <- p + theme(panel.background = element_blank(), axis.line.x = element_line()) + geom_hline(color = "red", yintercept = -log10(0.05))
-    p <- p + ylab(expression(paste(Log[10], ' P-Value')))
-    CairoPDF(filename, height = plot.height, width = plot.width, bg = "transparent")
-    print(p)
-    dev.off()
-}
+blue.only <- filter(modules.filter, Module == "blue") %>% extract2("Symbol")
+brown.only <- filter(modules.filter, Module == "brown") %>% extract2("Symbol")
+turquoise.only <- filter(modules.filter, Module == "turquoise") %>% extract2("Symbol")
+
+blue.ppi <- GetPPI(blue.only)
+brown.ppi <- GetPPI(brown.only)
+turquoise.ppi <- GetPPI(turquoise.only)
+
+blue.all.graph <- graph_from_edgelist(as.matrix(blue.ppi), directed = FALSE) %>% igraph::simplify()
+blue.incident <- map(V(blue.all.graph), incident, graph = blue.all.graph) %>% 
+    map_int(length) %>% 
+    sort
+blue.ppi.df <- tibble(Symbol = names(blue.incident), PPI = blue.incident) %>% 
+    inner_join(top.up) %>%
+    arrange(desc(PPI)) 
+
+brown.all.graph <- graph_from_edgelist(as.matrix(brown.ppi), directed = FALSE) %>% igraph::simplify()
+brown.incident <- map(V(brown.all.graph), incident, graph = brown.all.graph) %>% 
+    map_int(length) %>% 
+    sort
+brown.ppi.df <- tibble(Symbol = names(brown.incident), PPI = brown.incident) %>% 
+    inner_join(top.up) %>%
+    arrange(desc(PPI))
+
+turquoise.all.graph <- graph_from_edgelist(as.matrix(turquoise.ppi), directed = FALSE) %>% igraph::simplify()
+turquoise.incident <- map(V(turquoise.all.graph), incident, graph = turquoise.all.graph) %>% 
+    map_int(length) %>% 
+    sort
+turquoise.ppi.df <- tibble(Symbol = names(turquoise.incident), PPI = turquoise.incident) %>% 
+    inner_join(top.down) %>%
+    arrange(desc(PPI))
+
+Top5Plot("PPI", blue.ppi.df, genes.collapse, pheno.import, "Combined", "PPI Hub Genes", "top5.blue.ppi")
+Top5Plot("PPI", brown.ppi.df, genes.collapse, pheno.import, "Combined", "PPI Hub Genes", "top5.brown.ppi")
+Top5Plot("PPI", turquoise.ppi.df, genes.collapse, pheno.import, "Combined", "PPI Hub Genes", "top5.turquoise.ppi")
 
 #Enrichr
 source("../../code/GO/enrichr.R")
 modules.submit <- select(final.genetable, Symbol, Module)
-enrichr.terms <- c("GO_Biological_Process_2015", "GO_Molecular_Function_2015", "KEGG_2016", "Reactome_2016", "Human_Gene_Atlas", "GTEx_Tissue_Sample_Gene_Expression_Profiles_up") 
+enrichr.terms <- c("GO_Biological_Process_2015", "GO_Molecular_Function_2015", "KEGG_2016", "Reactome_2016") 
 color.names <- unique(module.colors) %>% sort
 map(color.names, EnrichrSubmit, modules.submit, enrichr.terms, FALSE)
 
 blue.only <- filter(modules.submit, Module == "blue")$Symbol
 blue.gobiol.file <- "./enrichr/blue/blue_GO_Biological_Process_2015.xlsx"
 blue.gobiol <- read.xlsx(blue.gobiol.file) 
-blue.gobiol.filter <- FilterEnrichr(blue.gobiol)
+blue.gobiol.filter <- FilterEnrichr(blue.gobiol) %>% as_tibble
 GetKappaCluster(file_path_sans_ext(blue.gobiol.file), blue.gobiol.filter, blue.only)
-blue.gobiol.final <- slice(blue.gobiol.filter, c(21, 13, 18, 6))
-blue.gobiol.final$Database <- "GO Biological Process"
+blue.gobiol.final <- slice(blue.gobiol.filter, c(1, 8, 10, 20))
+blue.gobiol.final$Database <- "GO BP"
 
 blue.gomole.file <- "./enrichr/blue/blue_GO_Molecular_Function_2015.xlsx"
 blue.gomole <- read.xlsx(blue.gomole.file) 
-blue.gomole.filter <- FilterEnrichr(blue.gomole)
+blue.gomole.filter <- FilterEnrichr(blue.gomole) %>% as_tibble
 GetKappaCluster(file_path_sans_ext(blue.gomole.file), blue.gomole.filter, blue.only)
-blue.gomole.final <- slice(blue.gomole.filter, c(2, 3))
-blue.gomole.final$Database <- "GO Molecular Function"
+blue.gomole.final <- slice(blue.gomole.filter, c(1, 3, 4))
+blue.gomole.final$Database <- "GO MF"
 
 blue.reactome.file <- "./enrichr/blue/blue_Reactome_2016.xlsx"
 blue.reactome <- read.xlsx(blue.reactome.file) 
-blue.reactome.filter <- FilterEnrichr(blue.reactome)
+blue.reactome.filter <- FilterEnrichr(blue.reactome) %>% as_tibble
 GetKappaCluster(file_path_sans_ext(blue.reactome.file), blue.reactome.filter, blue.only)
-blue.reactome.final <- slice(blue.reactome.filter, c(4, 29))
+blue.reactome.final <- slice(blue.reactome.filter, c(1, 31, 32))
 blue.reactome.final$Database <- "Reactome"
 
 blue.kegg.file <- "./enrichr/blue/blue_KEGG_2016.xlsx"
 blue.kegg <- read.xlsx(blue.kegg.file) 
-blue.kegg.filter <- FilterEnrichr(blue.kegg)
+blue.kegg.filter <- FilterEnrichr(blue.kegg) %>% as_tibble
 GetKappaCluster(file_path_sans_ext(blue.kegg.file), blue.kegg.filter, blue.only)
-blue.kegg.final <- slice(blue.kegg.filter, c(3))
+blue.kegg.final <- slice(blue.kegg.filter, c(1, 2, 4))
 blue.kegg.final$Database <- "KEGG"
 
 blue.enrichr.final <- rbind(blue.gobiol.final, blue.gomole.final, blue.reactome.final, blue.kegg.final)
-EnrichrPlot(blue.enrichr.final, "blue.enrichr", "Blue Module", plot.width = 10)
+EnrichrPlot(blue.enrichr.final, "blue.enrichr", "Blue Module", plot.width = 8)
 
 brown.only <- filter(modules.submit, Module == "brown")$Symbol
 brown.gobiol.file <- "./enrichr/brown/brown_GO_Biological_Process_2015.xlsx"
 brown.gobiol <- read.xlsx(brown.gobiol.file) 
-brown.gobiol.filter <- FilterEnrichr(brown.gobiol)
+brown.gobiol.filter <- FilterEnrichr(brown.gobiol) %>% as_tibble
 GetKappaCluster(file_path_sans_ext(brown.gobiol.file), brown.gobiol.filter, brown.only)
-brown.gobiol.final <- slice(brown.gobiol.filter, c(4, 2, 10, 7, 11))
-brown.gobiol.final$Database <- "GO Biological Process"
+brown.gobiol.final <- slice(brown.gobiol.filter, c(1, 2, 3, 6))
+brown.gobiol.final$Database <- "GO BP"
 
 brown.gomole.file <- "./enrichr/brown/brown_GO_Molecular_Function_2015.xlsx"
 brown.gomole <- read.xlsx(brown.gomole.file) 
-brown.gomole.filter <- FilterEnrichr(brown.gomole)
+brown.gomole.filter <- FilterEnrichr(brown.gomole) %>% as_tibble
 GetKappaCluster(file_path_sans_ext(brown.gomole.file), brown.gomole.filter, brown.only)
-brown.gomole.final <- slice(brown.gomole.filter, c(2, 9))
-brown.gomole.final$Database <- "GO Molecular Function"
+brown.gomole.final <- slice(brown.gomole.filter, c(1, 5, 6))
+brown.gomole.final$Database <- "GO MF"
 
 brown.reactome.file <- "./enrichr/brown/brown_Reactome_2016.xlsx"
 brown.reactome <- read.xlsx(brown.reactome.file) 
-brown.reactome.filter <- FilterEnrichr(brown.reactome)
+brown.reactome.filter <- FilterEnrichr(brown.reactome) %>% as_tibble
 GetKappaCluster(file_path_sans_ext(brown.reactome.file), brown.reactome.filter, brown.only)
-brown.reactome.final <- slice(brown.reactome.filter, c(3, 5))
+brown.reactome.final <- slice(brown.reactome.filter, c(2, 3, 18))
 brown.reactome.final$Database <- "Reactome"
 
 brown.kegg.file <- "./enrichr/brown/brown_KEGG_2016.xlsx"
 brown.kegg <- read.xlsx(brown.kegg.file) 
-brown.kegg.filter <- FilterEnrichr(brown.kegg)
+brown.kegg.filter <- FilterEnrichr(brown.kegg) %>% as_tibble
 GetKappaCluster(file_path_sans_ext(brown.kegg.file), brown.kegg.filter, brown.only)
-brown.kegg.final <- slice(brown.kegg.filter, c(1))
+brown.kegg.final <- slice(brown.kegg.filter, c(3, 7, 9))
 brown.kegg.final$Database <- "KEGG"
 
 brown.enrichr.final <- rbind(brown.gobiol.final, brown.kegg.final, brown.reactome.final, brown.gomole.final)
-EnrichrPlot(brown.enrichr.final, "brown.enrichr", "brown Module", plot.width = 9)
+EnrichrPlot(brown.enrichr.final, "brown.enrichr", "Brown Module", plot.width = 8)
 
 turquoise.only <- filter(modules.submit, Module == "turquoise")$Symbol
 turquoise.gobiol.file <- "./enrichr/turquoise/turquoise_GO_Biological_Process_2015.xlsx"
 turquoise.gobiol <- read.xlsx(turquoise.gobiol.file) 
-turquoise.gobiol.filter <- FilterEnrichr(turquoise.gobiol)
+turquoise.gobiol.filter <- FilterEnrichr(turquoise.gobiol) %>% as_tibble
 GetKappaCluster(file_path_sans_ext(turquoise.gobiol.file), turquoise.gobiol.filter, turquoise.only)
-turquoise.gobiol.final <- slice(turquoise.gobiol.filter, c(1, 3, 7, 8, 15))
-turquoise.gobiol.final$Database <- "GO Biological Process"
+turquoise.gobiol.final <- slice(turquoise.gobiol, c(1, 2, 3, 5))
+turquoise.gobiol.final$Database <- "GO BP"
 
 turquoise.gomole.file <- "./enrichr/turquoise/turquoise_GO_Molecular_Function_2015.xlsx"
 turquoise.gomole <- read.xlsx(turquoise.gomole.file) 
-turquoise.gomole.filter <- FilterEnrichr(turquoise.gomole)
+turquoise.gomole.filter <- FilterEnrichr(turquoise.gomole) %>% as_tibble
 GetKappaCluster(file_path_sans_ext(turquoise.gomole.file), turquoise.gomole.filter, turquoise.only)
-turquoise.gomole.final <- slice(turquoise.gomole.filter, c(2, 3))
-turquoise.gomole.final$Database <- "GO Molecular Function"
+turquoise.gomole.final <- slice(turquoise.gomole, c(1, 2, 4))
+turquoise.gomole.final$Database <- "GO MF"
 
 turquoise.reactome.file <- "./enrichr/turquoise/turquoise_Reactome_2016.xlsx"
 turquoise.reactome <- read.xlsx(turquoise.reactome.file) 
-turquoise.reactome.filter <- FilterEnrichr(turquoise.reactome)
+turquoise.reactome.filter <- FilterEnrichr(turquoise.reactome) %>% as_tibble
 GetKappaCluster(file_path_sans_ext(turquoise.reactome.file), turquoise.reactome.filter, turquoise.only)
-turquoise.reactome.final <- slice(turquoise.reactome.filter, c(1))
+turquoise.reactome.final <- slice(turquoise.reactome, c(1, 2, 4))
 turquoise.reactome.final$Database <- "Reactome"
 
 turquoise.kegg.file <- "./enrichr/turquoise/turquoise_KEGG_2016.xlsx"
 turquoise.kegg <- read.xlsx(turquoise.kegg.file) 
-turquoise.kegg.filter <- FilterEnrichr(turquoise.kegg)
+turquoise.kegg.filter <- FilterEnrichr(turquoise.kegg) %>% as_tibble
 GetKappaCluster(file_path_sans_ext(turquoise.kegg.file), turquoise.kegg.filter, turquoise.only)
-turquoise.kegg.final <- slice(turquoise.kegg.filter, c(1))
+turquoise.kegg.final <- slice(turquoise.kegg, c(1, 2, 8))
 turquoise.kegg.final$Database <- "KEGG"
 
 turquoise.enrichr.final <- rbind(turquoise.gobiol.final, turquoise.kegg.final, turquoise.reactome.final, turquoise.gomole.final)
