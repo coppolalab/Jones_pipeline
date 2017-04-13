@@ -1,13 +1,13 @@
 library(RnBeads)
 library(biomaRt)
 library(parallel)
+library(sva)
 
 library(Cairo)
 library(UpSetR)
 library(openxlsx)
 
 library(R.utils)
-library(tidyr)
 library(broom)
 library(magrittr)
 library(stringr)
@@ -284,6 +284,12 @@ lm.tissue.age <- lm(as.integer(Tissue) ~ Chronological.Age, pheno.known) %>% ano
 lm.tissue.sex <- lm(as.integer(Tissue) ~ Sex, pheno.known) %>% anova %>% tidy
 
 rnb.run.qc(rnb.known, report.dir)
+rnb.norm.export <- rnb.execute.normalization(rnb.known, method = "none", bgcorr.method = "methylumi.noob")
+SaveRDSgz(rnb.norm.export, "./save/rnb.norm.export.rda")
+rnb.narm.export <- rnb.execute.na.removal.fix(rnb.norm.export, 0)$dataset
+site.combat <- ComBat(dat = meth(rnb.narm.export), batch = pheno(rnb.narm.export)$Batch)
+write.csv(site.combat, "./site_combat.csv")
+
 raw.beta <- meth(rnb.known)
 rownames(raw.beta) <- rownames(annotation(rnb.known, type = "sites"))
 cpgset <- read_csv("./datMiniAnnotation.csv")
