@@ -2,6 +2,9 @@ library(RnBeads)
 library(biomaRt)
 library(parallel)
 library(sva)
+library(WGCNA)
+library(PMCMR)
+library(BayesFactor)
 
 library(Cairo)
 library(UpSetR)
@@ -213,6 +216,36 @@ UpDown <- function(filter.vector, enrichr.df) {
     enrichr.vector
 }
 
+MethylationPlot <- function(ensembl.id, symbol, pheno.data) {
+    gene.meth <- promoters.compare[ensembl.id,]
+    gene.df <- tibble(Tissue = pheno.data$Tissue, Cell.Type = pheno.data$Cell.Type, Methylation = gene.meth) 
+    gene.df$Combined <- str_c(gene.df$Tissue, gene.df$Cell.Type, sep = " ") %>% factor(levels = c("duodenum mucosa", "duodenum crypts", "colon mucosa", "colon crypts"))
+
+    p <- ggplot(gene.df, aes(x = Combined, y = Methylation, color = Combined)) + geom_boxplot() + geom_jitter() + theme_bw()
+    p <- p + theme(legend.position = "none") + theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.title.x = element_blank())
+    p <- p + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.title.x = element_blank()) 
+    p <- p + theme(plot.background = element_blank(), panel.border = element_rect(size = 1, color = "black"))
+    p <- p + theme(plot.title = element_text(hjust = 0.5)) 
+    CairoPDF(str_c(symbol, "_methylation"), height = 4, width = 4, bg = "transparent")
+    print(p)
+    dev.off()
+}
+
+PCAPlot <- function(plot.df, color.column, scale.name, filename){
+    p <- ggplot(data = plot.df, aes_string(x = "PC1", y = "PC2", col = color.column)) + geom_point()
+    p <- p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), plot.background = element_blank(), legend.background = element_blank())
+    p <- p + theme(panel.border = element_rect(color = "black", size = 1))
+    p <- p + scale_color_discrete(name = scale.name, labels = capitalize(levels(plot.df[[color.column]])))
+    CairoPDF(filename, width = 8, height = 6, bg = "transparent")
+    print(p)
+    dev.off()
+}
+
+rnb.options(disk.dump.big.matrices = FALSE)
+rnb.options(enforce.memory.management = TRUE)
+rnb.options(logging.disk = TRUE)
+rnb.options(import.gender.prediction = FALSE)
+
 objects.size <- lapply(ls(), function(thing) print(object.size(get(thing)), units = 'auto')) 
 names(objects.size) <- ls()
 unlist(objects.size) %>% sort
@@ -260,10 +293,10 @@ logger.start(fname = NA)
 parallel.setup(7)
 options(fftempdir = "~/tmp/Rtmp")
 #set.tempdir("~/tmp/Rtmp")
-rnb.options(logging.disk = TRUE)
+
 
 data.source <- c(idat.dir, sample.annotation)
-rnb.options(import.gender.prediction = FALSE)
+
 result <- rnb.run.import(data.source = data.source, data.type = "infinium.idat.dir", dir.reports = report.dir)
 rnb.set <- result$rnb.set
 SaveRDSgz(rnb.set, "./save/rnb.set.rda")
@@ -284,11 +317,30 @@ lm.tissue.age <- lm(as.integer(Tissue) ~ Chronological.Age, pheno.known) %>% ano
 lm.tissue.sex <- lm(as.integer(Tissue) ~ Sex, pheno.known) %>% anova %>% tidy
 
 rnb.run.qc(rnb.known, report.dir)
-rnb.norm.export <- rnb.execute.normalization(rnb.known, method = "none", bgcorr.method = "methylumi.noob")
-SaveRDSgz(rnb.norm.export, "./save/rnb.norm.export.rda")
-rnb.narm.export <- rnb.execute.na.removal.fix(rnb.norm.export, 0)$dataset
-site.combat <- ComBat(dat = meth(rnb.narm.export), batch = pheno(rnb.narm.export)$Batch)
+rnb.norm.none <- rnb.execute.normalization(rnb.known, method = "none", bgcorr.method = "methylumi.noob")
+rnb.norm.bmiq <- rnb.execute.normalization(rnb.known, method = "bmiq", bgcorr.method = "methylumi.noob")
+write.csv(meth(rnb.norm.bmiq), "sites_bmiq_nocombat.csv")
+SaveRDSgz(rnb.norm.none, "./save/rnb.norm.none.rda")
+SaveRDSgz(rnb.norm.bmiq, "./save/rnb.norm.bmiq.rda")
+
+rnb.narm.none <- rnb.execute.na.removal.fix(rnb.norm.none, 0)$dataset
+site.combat <- ComBat(dat = meth(rnb.narm.none), batch = pheno(rnb.narm.none)$Batch)
 write.csv(site.combat, "./site_combat.csv")
+
+rnb.narm.bmiq <- rnb.execute.na.removal.fix(rnb.norm.bmiq, 0)$dataset
+site.bmiq <- ComBat(dat = meth(rnb.narm.bmiq), batch = pheno(rnb.narm.bmiq)$Batch)
+rownames(site.bmiq) <- rownames(annotation(rnb.narm.bmiq, type = "sites"))
+
+#output.log <- read_delim("./site_bmiq.log.txt", '\n')
+#missing.1 <- slice(output.log, 3) %>% as.character %>% str_replace_all(" ", "")
+#missing.2 <- slice(output.log, 6) %>% as.character %>% str_replace_all(" ", "") %>% str_split(",") %>% extract2(1)
+#missing.all <- c("cg01050273", missing.1, missing.2)
+all.probes <- rownames(annotation(rnb.norm.bmiq, type = "sites"))
+missing.probes <- all.probes[!(all.probes %in% rownames(site.bmiq))]
+missing.matrix <- matrix(rep(NA, length(missing.probes) * ncol(site.bmiq)), nrow = length(missing.probes), ncol = ncol(site.bmiq)) %>% set_rownames(missing.probes)
+
+site.complete <- rbind(site.bmiq, missing.matrix)
+write.csv(site.complete, "./site_complete.csv")
 
 raw.beta <- meth(rnb.known)
 rownames(raw.beta) <- rownames(annotation(rnb.known, type = "sites"))
@@ -432,15 +484,6 @@ dred.genes.rmcov %<>% mutate(Tissue.CellType = factor(str_c(pheno.export$Tissue,
 #dred.promoters.fvalue <- dred.promoters.rsquared / ((1 - dred.promoters.rsquared) / dred.promoters.freedom)
 #dred.promoters.pvalue <- pf(dred.promoters.fvalue, 1, dred.promoters.freedom, lower.tail = FALSE)
 
-PCAPlot <- function(plot.df, color.column, scale.name, filename){
-    p <- ggplot(data = plot.df, aes_string(x = "PC1", y = "PC2", col = color.column)) + geom_point()
-    p <- p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), plot.background = element_blank(), legend.background = element_blank())
-    p <- p + theme(panel.border = element_rect(color = "black", size = 1))
-    p <- p + scale_color_discrete(name = scale.name, labels = capitalize(levels(plot.df[[color.column]])))
-    CairoPDF(filename, width = 8, height = 6, bg = "transparent")
-    print(p)
-    dev.off()
-}
 
 PCAPlot(dred.promoters.rmcov, "Cell.Type", "Cell Type", "promoters_celltype_rmcov")
 PCAPlot(dred.promoters.rmcov, "Age", "Age", "promoters_age_rmcov")
@@ -487,8 +530,6 @@ SaveRDSgz(pheno(rnb.compare), "./save/pheno.compare.rda")
 comp.cols <- "Combined.Factor"
 reg.types <- c("genes", "promoters")
 
-rnb.options(disk.dump.big.matrices = FALSE)
-rnb.options(enforce.memory.management = TRUE)
 diffmeth.adj <- rnb.execute.computeDiffMeth(rnb.compare, pheno.cols = comp.cols, pheno.cols.all.pairwise = comp.cols, region.types = reg.types)
 SaveRDSgz(diffmeth.adj, "./save/diffmeth.adj.rda")
 
@@ -724,62 +765,151 @@ promoters.overlap$Gene <- promoters.union
 promoters.dccc.only <- filter(promoters.overlap, duodenum.crypts_vs._colon.crypts == TRUE & duodenum.mucosa_vs._duodenum.crypts == TRUE)
 write.xlsx(promoters.dccc.only, "promoters.dccc.only.xlsx")
 
-promoters.dccc.up <- filter(promoters.filter, duodenum.mucosa_vs._duodenum.crypts.p.val.adj < 0.01 & duodenum.crypts_vs._colon.crypts.p.val.adj < 0.01 & duodenum.mucosa_vs._duodenum.crypts.log2FC < 0 & duodenum.crypts_vs._colon.crypts.log2FC > 0)
+promoters.dccc.up <- filter(promoters.filter, duodenum.crypts_vs._colon.crypts.p.val.adj < 0.01 & duodenum.crypts_vs._colon.crypts.log2FC > 0 & duodenum.mucosa_vs._duodenum.crypts.p.val.adj < 0.01 & duodenum.mucosa_vs._duodenum.crypts.log2FC < 0)
 write.xlsx(promoters.dccc.up, "promoters.dccc.up.xlsx")
-promoters.dccc.down <- filter(promoters.filter, duodenum.mucosa_vs._duodenum.crypts.p.val.adj < 0.01 & duodenum.crypts_vs._colon.crypts.p.val.adj < 0.01 & duodenum.mucosa_vs._duodenum.crypts.log2FC > 0 & duodenum.crypts_vs._colon.crypts.log2FC < 0)
+promoters.dccc.down <- filter(promoters.filter, duodenum.crypts_vs._colon.crypts.p.val.adj < 0.01 & duodenum.crypts_vs._colon.crypts.log2FC < 0 & duodenum.mucosa_vs._duodenum.crypts.p.val.adj < 0.01 & duodenum.mucosa_vs._duodenum.crypts.log2FC > 0)
 write.xlsx(promoters.dccc.down, "promoters.dccc.down.xlsx")
+
+genes.dccc.up <- filter(genes.filter, duodenum.crypts_vs._colon.crypts.p.val.adj < 0.01 & duodenum.crypts_vs._colon.crypts.log2FC > 0 & duodenum.mucosa_vs._duodenum.crypts.p.val.adj < 0.01 & duodenum.mucosa_vs._duodenum.crypts.log2FC < 0)
+write.xlsx(genes.dccc.up, "genes.dccc.up.xlsx")
+genes.dccc.down <- filter(genes.filter, duodenum.crypts_vs._colon.crypts.p.val.adj < 0.01 & duodenum.crypts_vs._colon.crypts.log2FC < 0 & duodenum.mucosa_vs._duodenum.crypts.p.val.adj < 0.01 & duodenum.mucosa_vs._duodenum.crypts.log2FC > 0)
+write.xlsx(genes.dccc.down, "genes.dccc.down.xlsx")
+
+promoters.crypts.up <- filter(promoters.filter, duodenum.crypts_vs._colon.crypts.p.val.adj < 0.01 & duodenum.crypts_vs._colon.crypts.log2FC > 0)
+write.xlsx(promoters.crypts.up, "promoters.crypts.up.xlsx")
+promoters.crypts.down <- filter(promoters.filter, duodenum.crypts_vs._colon.crypts.p.val.adj < 0.01 & duodenum.crypts_vs._colon.crypts.log2FC < 0)
+write.xlsx(promoters.crypts.down, "promoters.crypts.down.xlsx")
+
+genes.crypts.up <- filter(genes.filter, duodenum.crypts_vs._colon.crypts.p.val.adj < 0.01 & duodenum.crypts_vs._colon.crypts.log2FC > 0)
+write.xlsx(genes.crypts.up, "genes.crypts.up.xlsx")
+genes.crypts.down <- filter(genes.filter, duodenum.crypts_vs._colon.crypts.p.val.adj < 0.01 & duodenum.crypts_vs._colon.crypts.log2FC < 0)
+write.xlsx(genes.crypts.down, "genes.crypts.down.xlsx")
 
 #Top 5 differentially methylated plots
 map(comparisons.format, Top5Plot, promoters.coding, promoters.compare, pheno.compare, "promoters")
 map(comparisons.format, Top5Plot, genes.coding, genes.compare, pheno.compare, "genes")
 
 #DNAm age
-dnam.import <- read_csv("./allsites_beta.output.csv")
-dnam.plot <- select(dnam.import, Age, DNAmAge, Cell.Type, Tissue)
-dnam.filter <- filter(dnam.plot, Cell.Type == "crypts" | Cell.Type == "mucosa")
-dnam.filter$Combined <- str_c(dnam.filter$Tissue, dnam.filter$Cell.Type, sep = " ") %>% factor(levels = c("duodenum mucosa", "duodenum crypts", "colon mucosa", "colon crypts"))
-dnam.filter$Difference <- dnam.filter$DNAmAge - dnam.filter$Age 
+dnam.import <- read_csv("./site_bmiq.output.csv")
+disease.info <- read_csv("../new_sample_annotations.csv") %>% select(barcode, Reason.for.Surgery)
+dnam.plot <- select(dnam.import, SampleID, DNAmAge) %>% 
+    cbind(select(pheno.export, barcode, Tissue, Cell.Type, Age.cont, Sex)) %>% as_tibble %>%
+    left_join(disease.info) %>%
+    mutate_at(vars(DNAmAge), signif, digits = 3)
+
+dnam.plot$Combined <- str_c(dnam.plot$Tissue, dnam.plot$Cell.Type, sep = " ") #%>% factor(levels = c("duodenum mucosa", "duodenum crypts", "colon mucosa", "colon crypts"))
+dnam.plot$Difference <- signif(dnam.plot$DNAmAge - dnam.plot$Age.cont, 3)
+dnam.plot$Ratio <- signif(dnam.plot$DNAmAge / dnam.plot$Age.cont, 3)
 #age.split <- str_split_fixed(dnam.plot$Chronological.Age, "\\-", 2) %>% data.frame %>% apply(2, as.numeric) %>% apply(1, mean)
 #dnam.plot$Mean.Age <- age.split
-SaveRDSgz(dnam.filter, "./save/dnam.filter.rda")
+dnam.export <- select(dnam.plot, SampleID, Tissue, Cell.Type, Combined, Age.cont, DNAmAge, Difference, Ratio, Sex, Reason.for.Surgery)
+write.xlsx(dnam.export, "clock.results.xlsx")
 write.xlsx(dnam.filter, "dnam.age.xlsx")
 
-p <- ggplot(dnam.filter, aes(Age, DNAmAge, col = Combined)) + geom_point()
-p <- p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) 
+dnam.filter <- filter(dnam.plot, Cell.Type == "crypts" | Cell.Type == "mucosa")
+dnam.filter$Combined %<>% factor %>% droplevels
+p <- ggplot(dnam.plot, aes(Age.cont, DNAmAge, col = Combined)) + geom_point()
+p <- p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+p <- p + theme(legend.background = element_blank(), plot.background = element_blank()) 
 p <- p + xlab("Chronological Age") + ylab("DNA Methylation Age") + scale_color_discrete(name = "Cell Type")
 p <- p + ylim(0,100) + xlim(0,100)
-CairoPDF("dnam.plot", width = 7, height = 6)
+CairoPDF("dnam.plot", width = 8, height = 6, bg = "transparent")
 print(p)
 dev.off()
 
-p <- ggplot(dnam.filter, aes(Combined, Difference, color = Combined)) + geom_boxplot(width = 0.5) + geom_jitter(width = 0.5)
+p <- ggplot(dnam.filter, aes(Age.cont, Difference, col = Combined)) + geom_point()
+p <- p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) 
+p <- p + theme(legend.background = element_blank(), plot.background = element_blank()) 
+p <- p + xlab("Chronological Age") + ylab("DNAm Age - Chronological Age") + scale_color_discrete(name = "Cell Type")
+CairoPDF("age.diff.plot", width = 8, height = 6, bg = "transparent")
+print(p)
+dev.off()
+
+
+#Tissue groups
+duodenum.mucosa <- filter(dnam.plot, Combined == "duodenum mucosa")
+duodenum.crypts <- filter(dnam.plot, Combined == "duodenum crypts")
+colon.mucosa <- filter(dnam.plot, Combined == "colon mucosa")
+colon.crypts <- filter(dnam.plot, Combined == "colon crypts")
+
+bicor(colon.crypts$Age.cont, colon.crypts$Difference)
+bicor(duodenum.crypts$Age.cont, duodenum.crypts$Difference)
+bicor(duodenum.mucosa$Age.cont, duodenum.mucosa$Difference)
+bicor(colon.mucosa$Age.cont, colon.mucosa$Difference)
+
+p <- ggplot(dnam.plot, aes(Combined, Ratio, color = Combined)) + geom_boxplot(width = 0.5) + geom_jitter(width = 0.5)
 p <- p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), plot.background = element_blank()) 
 p <- p + theme(panel.border = element_rect(color = "black", size = 1))
-p <- p + theme(axis.title.x = element_blank()) + ylab("Age Difference") + theme(legend.position = "none")
+p <- p + theme(axis.title.x = element_blank()) + ylab("Methylation Age / Chronological Age") + theme(legend.position = "none")
+p <- p + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+p <- p + geom_hline(yintercept = 1)
+CairoPDF("ratio.plot", width = 7, height = 6, bg = "transparent")
+print(p)
+dev.off()
+
+dnam.plot$Number <- rownames(dnam.plot)
+p <- ggplot(dnam.plot, aes(Combined, Difference, color = Combined, label = Number)) + geom_boxplot(width = 0.5) + geom_jitter(width = 0.5) 
+p <- p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), plot.background = element_blank()) 
+p <- p + theme(panel.border = element_rect(color = "black", size = 1))
+p <- p + theme(axis.title.x = element_blank()) + ylab("Methylation Age - Chronological Age") + theme(legend.position = "none")
+p <- p + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+p <- p + geom_hline(yintercept = 0)
 CairoPDF("diff.plot", width = 7, height = 6, bg = "transparent")
+print(p)
+dev.off()
+
+dnam.surgery <- filter(dnam.plot, !is.na(Reason.for.Surgery)) 
+p <- ggplot(dnam.surgery, aes(Reason.for.Surgery, Difference)) + geom_boxplot(width = 0.5, outlier.shape = NA) + geom_jitter(aes(color = Combined), dnam.surgery, width = 0.5) 
+p <- p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), plot.background = element_blank()) 
+p <- p + theme(panel.border = element_rect(color = "black", size = 1))
+p <- p + theme(axis.title.x = element_blank()) + ylab("Age Difference") + theme(legend.background = element_blank())
+p <- p + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+p <- p + geom_hline(yintercept = 0)
+CairoPDF("surgery.diff.plot", width = 7, height = 6, bg = "transparent")
 print(p)
 dev.off()
 
 kw.statistic <- kruskal.test(Difference ~ Combined, dnam.filter) %>% tidy
 dunn.statistic <- posthoc.kruskal.dunn.test(Difference ~ Combined, dnam.filter, p.adjust.method = "fdr")
 
-dnam.bf <- anovaBF(Difference ~ Combined, data.frame(dnam.filter))
-dnam.posterior <- posterior(dnam.bf, iterations = 100000) %>% data.frame 
-dnam.quantiles <- map(dnam.posterior, quantile, c(0.025, 0.5, 0.975))
+dnam.diff.bf <- anovaBF(Difference ~ Combined, data.frame(dnam.filter))
+dnam.diff.posterior <- posterior(dnam.diff.bf, iterations = 100000) %>% data.frame 
+dnam.quantiles <- map(dnam.diff.posterior, quantile, c(0.025, 0.5, 0.975))
 
-dnam.coefs <- select(dnam.posterior, matches("Combined\\.")) 
-colnames(dnam.coefs) %<>% str_replace("Combined\\.", "")
-estimate.plot <- gather(dnam.coefs, Group, Estimate) 
-estimate.plot$Group %<>% str_replace("\\.", " ") %>% factor(levels = c("duodenum mucosa", "duodenum crypts", "colon mucosa", "colon crypts"))
-estimate.plot$Estimate.final <- estimate.plot$Estimate + dnam.quantiles$mu[2]
+dnam.diff.coefs <- select(dnam.diff.posterior, matches("Combined\\.")) 
+colnames(dnam.diff.coefs) %<>% str_replace("Combined\\.", "")
+estimate.diff.plot <- gather(dnam.diff.coefs, Group, Estimate) 
+estimate.diff.plot$Group %<>% str_replace("\\.", " ") %>% factor(levels = c("duodenum mucosa", "duodenum crypts", "colon mucosa", "colon crypts"))
+estimate.diff.plot$Estimate.final <- estimate.diff.plot$Estimate + dnam.quantiles$mu[2]
 
-p <- ggplot(estimate.plot, aes(x = Group, y = Estimate.final, fill = Group)) + geom_violin(draw_quantiles = c(0.025, 0.5, 0.975)) + theme_bw()
+p <- ggplot(estimate.diff.plot, aes(x = Group, y = Estimate.final, fill = Group)) + geom_violin(draw_quantiles = c(0.025, 0.5, 0.975)) + theme_bw()
 p <- p + theme(legend.position = "none", panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.border = element_rect(color = "black", size = 1))
 p <- p + theme(plot.background = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank()) + ylab("Age Difference Estimate") + ggtitle("Age Difference")
 p <- p + theme(plot.title = element_text(hjust = 0.5))
-CairoPDF("estimate", width = 7, height = 6, bg = "transparent")
+CairoPDF("estimate.diff", width = 7, height = 6, bg = "transparent")
 print(p)
 dev.off()
+
+dnam.ratio.bf <- anovaBF(Ratio ~ Combined, data.frame(dnam.filter))
+dnam.ratio.posterior <- posterior(dnam.ratio.bf, iterations = 100000) %>% data.frame 
+dnam.quantiles <- map(dnam.ratio.posterior, quantile, c(0.025, 0.5, 0.975))
+
+dnam.ratio.coefs <- select(dnam.ratio.posterior, matches("Combined\\.")) 
+colnames(dnam.ratio.coefs) %<>% str_replace("Combined\\.", "")
+estimate.ratio.plot <- gather(dnam.ratio.coefs, Group, Estimate) 
+estimate.ratio.plot$Group %<>% str_replace("\\.", " ") %>% factor(levels = c("duodenum mucosa", "duodenum crypts", "colon mucosa", "colon crypts"))
+estimate.ratio.plot$Estimate.final <- estimate.ratio.plot$Estimate + dnam.quantiles$mu[2]
+
+p <- ggplot(estimate.ratio.plot, aes(x = Group, y = Estimate.final, fill = Group)) + geom_violin(draw_quantiles = c(0.025, 0.5, 0.975)) + theme_bw()
+p <- p + theme(legend.position = "none", panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.border = element_rect(color = "black", size = 1))
+p <- p + theme(plot.background = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank()) + ylab("Age Ratio Estimate") + ggtitle("Age Ratio")
+p <- p + theme(plot.title = element_text(hjust = 0.5))
+CairoPDF("estimate.ratio", width = 7, height = 6, bg = "transparent")
+print(p)
+dev.off()
+
+kw.statistic <- kruskal.test(Difference ~ factor(Reason.for.Surgery), dnam.surgery) %>% tidy
+dunn.statistic <- posthoc.kruskal.dunn.test(Difference ~ factor(Reason.for.Surgery), dnam.surgery, p.adjust.method = "fdr")
 
 source("../../code/GO/enrichr.R")
 enrichr.terms <- c("GO_Biological_Process_2015", "GO_Molecular_Function_2015", "KEGG_2016", "Reactome_2016", "Human_Gene_Atlas", "GTEx_Tissue_Sample_Gene_Expression_Profiles_up") 
@@ -903,20 +1033,6 @@ clock.transcripts <- getNearestTranscript(hm450[clock.annotation$CpGmarker]) #ge
 clock.transcripts$Illumina.ID <- rownames(clock.transcripts) #Add Illumina ID column
 write.xlsx(clock.transcripts, "clock.transcripts.xlsx") #Save to .xlsx
 
-MethylationPlot <- function(ensembl.id, symbol, pheno.data) {
-    gene.meth <- promoters.compare[ensembl.id,]
-    gene.df <- tibble(Tissue = pheno.data$Tissue, Cell.Type = pheno.data$Cell.Type, Methylation = gene.meth) 
-    gene.df$Combined <- str_c(gene.df$Tissue, gene.df$Cell.Type, sep = " ") %>% factor(levels = c("duodenum mucosa", "duodenum crypts", "colon mucosa", "colon crypts"))
-
-    p <- ggplot(gene.df, aes(x = Combined, y = Methylation, color = Combined)) + geom_boxplot() + geom_jitter() + theme_bw()
-    p <- p + theme(legend.position = "none") + theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.title.x = element_blank())
-    p <- p + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.title.x = element_blank()) 
-    p <- p + theme(plot.background = element_blank(), panel.border = element_rect(size = 1, color = "black"))
-    p <- p + theme(plot.title = element_text(hjust = 0.5)) 
-    CairoPDF(str_c(symbol, "_methylation"), height = 4, width = 4, bg = "transparent")
-    print(p)
-    dev.off()
-}
 
 pheno.compare <- pheno(rnb.compare)
 pheno.compare$Age.cont <- str_split_fixed(pheno.compare$Chronological.Age, "-", 2) %>% apply(2, as.integer) %>% apply(1, mean)

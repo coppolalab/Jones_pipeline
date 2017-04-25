@@ -296,7 +296,6 @@ toptable.annot[,grepl("logFC|P.Val|AveExpr|^t$|B", colnames(toptable.annot))] %<
 
 DEWorkbook(toptable.annot, "toptable_annotated.xlsx")
 
-
 #Siggenes - why doesn't this work right?
 siggene.ebam.dc <- limma2ebam(fitb, coef = 2) 
 ebam2excel(siggene.ebam.dc, 0.9, "siggene.ebam.dc.csv")
@@ -390,21 +389,79 @@ GeneBoxplot(lumi.collapse, "ALPI", TRUE)
 GeneBoxplot(lumi.collapse, "FABP2", TRUE)
 GeneBoxplot(lumi.collapse, "SLC5A1", TRUE)
 
+#Only different in crypts
+
 de.sig.up <- filter(toptable.annot, adj.P.Val < 0.01 & logFC > 0) %>% select(Symbol, logFC, P.Value, adj.P.Val)
 colnames(de.sig.up)[-1] %<>% str_c(".expr")
 de.sig.down <- filter(toptable.annot, adj.P.Val < 0.01 & logFC < 0) %>% select(Symbol, logFC, P.Value, adj.P.Val)
 colnames(de.sig.down)[-1] %<>% str_c(".expr")
 
+all.promoters <- read.xlsx("../baseline_methylation/promoters.combined.xlsx") %>% as_tibble %>% filter(!is.na(Symbol) & nchar(Symbol) > 0) %>% filter(Symbol %in% toptable.annot$Symbol)
+all.genes <- read.xlsx("../baseline_methylation/genes.combined.xlsx") %>% as_tibble %>% filter(!is.na(Symbol) & nchar(Symbol) > 0) %>% filter(Symbol %in% toptable.annot$Symbol)
+
+promoters.crypts.up <- read.xlsx("../baseline_methylation/promoters.crypts.up.xlsx") %>% filter(Symbol %in% toptable.annot$Symbol)
+promoters.crypts.down <- read.xlsx("../baseline_methylation/promoters.crypts.down.xlsx") %>% filter(Symbol %in% toptable.annot$Symbol)
+
+genes.crypts.up <- read.xlsx("../baseline_methylation/genes.crypts.up.xlsx") %>% filter(Symbol %in% toptable.annot$Symbol)
+genes.crypts.down <- read.xlsx("../baseline_methylation/genes.crypts.down.xlsx") %>% filter(Symbol %in% toptable.annot$Symbol)
+
+expr.up.promoters <- filter(de.sig.up, Symbol %in% all.promoters$Symbol)
+up.promoters <- inner_join(expr.up.promoters, promoters.crypts.down)
+write.xlsx(up.promoters, "up.promoters.xlsx")
+expr.down.promoters <- filter(de.sig.down, Symbol %in% all.promoters$Symbol)
+down.promoters <- inner_join(de.sig.down, promoters.crypts.up)
+write.xlsx(down.promoters, "down.promoters.xlsx")
+
+promoters.down.table <- c(nrow(up.promoters), nrow(expr.up.promoters) - nrow(up.promoters), nrow(promoters.crypts.down) - nrow(up.promoters), nrow(all.promoters) - nrow(expr.up.promoters) - nrow(promoters.crypts.down) + nrow(up.promoters)) 
+dim(promoters.down.table) <- c(2,2)
+colnames(promoters.down.table) <- c("DE", "Not DE")
+rownames(promoters.down.table) <- c("DM", "Not DM")
+write.csv(promoters.down.table, "promoters.down.table.csv", quote = FALSE)
+
+promoters.up.table <- c(nrow(down.promoters), nrow(expr.down.promoters) - nrow(down.promoters), nrow(promoters.crypts.up) - nrow(down.promoters), nrow(all.promoters) - nrow(expr.down.promoters) - nrow(promoters.crypts.up) + nrow(down.promoters)) 
+dim(promoters.up.table) <- c(2,2)
+colnames(promoters.up.table) <- c("DE", "Not DE")
+rownames(promoters.up.table) <- c("DM", "Not DM")
+write.csv(promoters.up.table, "promoters.up.table.csv", quote = FALSE)
+
+expr.up.genes <- filter(de.sig.up, Symbol %in% all.genes$Symbol)
+up.genes <- inner_join(de.sig.up, genes.crypts.down)
+write.xlsx(up.genes, "up.genes.xlsx")
+expr.down.genes <- filter(de.sig.down, Symbol %in% all.genes$Symbol)
+down.genes <- inner_join(de.sig.down, genes.crypts.up)
+write.xlsx(down.genes, "down.genes.xlsx")
+
+genes.down.table <- c(nrow(up.genes), nrow(expr.up.genes) - nrow(up.genes), nrow(genes.crypts.down) - nrow(up.genes), nrow(all.genes) - nrow(expr.up.genes) - nrow(genes.crypts.down) + nrow(up.genes)) 
+dim(genes.down.table) <- c(2,2)
+colnames(genes.down.table) <- c("DE", "Not DE")
+rownames(genes.down.table) <- c("DM", "Not DM")
+write.csv(genes.down.table, "genes.down.table.csv", quote = FALSE)
+
+genes.up.table <- c(nrow(down.genes), nrow(expr.down.genes) - nrow(down.genes), nrow(genes.crypts.up) - nrow(down.genes), nrow(all.genes) - nrow(expr.down.genes) - nrow(genes.crypts.up) + nrow(down.genes)) 
+dim(genes.up.table) <- c(2,2)
+colnames(genes.up.table) <- c("DE", "Not DE")
+rownames(genes.up.table) <- c("DM", "Not DM")
+write.csv(genes.up.table, "genes.up.table.csv", quote = FALSE)
+
+#Also different in mucosa
+
 promoters.dccc.up <- read.xlsx("../baseline_methylation/promoters.dccc.up.xlsx")
 promoters.dccc.down <- read.xlsx("../baseline_methylation/promoters.dccc.down.xlsx")
 
-#Make nice table
-up.inner.join <- inner_join(de.sig.up, promoters.dccc.down)
-write.xlsx(up.inner.join, "up.inner.join.xlsx")
-down.inner.join <- inner_join(de.sig.down, promoters.dccc.up)
-write.xlsx(down.inner.join, "down.inner.join.xlsx")
+genes.dccc.up <- read.xlsx("../baseline_methylation/genes.dccc.up.xlsx")
+genes.dccc.down <- read.xlsx("../baseline_methylation/genes.dccc.down.xlsx")
 
-clock.transcripts <- read.xlsx("../baseline_methylation/clock.transcripts.xlsx")
+up.promoters.dccc <- inner_join(de.sig.up, promoters.dccc.down) %>% as_tibble
+write.xlsx(up.promoters.dccc, "up.promoters.dccc.xlsx")
+down.promoters.dccc <- inner_join(de.sig.down, promoters.dccc.up) %>% as_tibble
+write.xlsx(down.promoters.dccc, "down.promoters.dccc.xlsx")
+
+up.genes.dccc <- inner_join(de.sig.up, genes.dccc.down) %>% as_tibble
+write.xlsx(up.genes.dccc, "up.genes.dccc.xlsx")
+down.genes.dccc <- inner_join(de.sig.down, genes.dccc.up) %>% as_tibble
+write.xlsx(down.genes.dccc, "down.genes.dccc.xlsx")
+
+clock.transcripts <- read.xlsx("../baseline_methylation/clock.transcripts.xlsx") %>% as_tibble
 
 genes.bicor <- bicor(t(exprs(lumi.collapse)), lumi.collapse$Age) %>% 
     signif(3) %>%
